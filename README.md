@@ -1,8 +1,8 @@
 # tissue
 
-Fast, local issue tracker for agent workflows. Uses SQLite for queries and an
-append-only JSONL log for sync.
+Extremely fast and portable local issue tracker for agents. 
 
+- Uses SQLite for queries and an append-only JSONL log for sync.
 - Source of truth: `.tissue/issues.jsonl` (commit this to GitHub).
 - Local cache: `.tissue/issues.db*` (ignored by `.tissue/.gitignore`).
 
