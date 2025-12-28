@@ -1077,7 +1077,7 @@ fn listIssues(
     }
 
     if (search != null) {
-        try sql.appendSlice(allocator, "ORDER BY bm25(issues_fts, 1.0, 0.5), i.updated_at DESC ");
+        try sql.appendSlice(allocator, "ORDER BY bm25(issues_fts, 1.0, 0.5, 0.25), i.updated_at DESC ");
     } else {
         try sql.appendSlice(allocator, "ORDER BY i.updated_at DESC ");
     }

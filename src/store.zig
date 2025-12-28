@@ -265,9 +265,26 @@ pub const Store = struct {
             \\  value TEXT NOT NULL
             \\);
         );
-        try sqlite.exec(self.db,
-            \\CREATE VIRTUAL TABLE IF NOT EXISTS issues_fts USING fts5(title, body);
-        );
+        // FTS schema migration: check if we need to recreate with comments column
+        // The old schema had 2 columns (title, body), new has 3 (title, body, comments)
+        const fts_needs_migration = blk: {
+            const check = sqlite.prepare(self.db,
+                \\SELECT COUNT(*) FROM pragma_table_info('issues_fts') WHERE name = 'comments';
+            ) catch break :blk true; // Table doesn't exist, needs creation
+            defer sqlite.finalize(check);
+            if (sqlite.step(check) catch false) {
+                break :blk sqlite.columnInt(check, 0) == 0; // 0 means no comments column
+            }
+            break :blk true;
+        };
+        if (fts_needs_migration) {
+            sqlite.exec(self.db, "DROP TABLE IF EXISTS issues_fts;") catch {};
+            try sqlite.exec(self.db,
+                \\CREATE VIRTUAL TABLE issues_fts USING fts5(title, body, comments);
+            );
+            // Force reimport by resetting jsonl offset
+            self.setMetaInt("jsonl_offset", 0) catch {};
+        }
         try sqlite.exec(self.db,
             \\CREATE INDEX IF NOT EXISTS idx_issues_status_updated ON issues(status, updated_at);
         );
@@ -282,6 +299,9 @@ pub const Store = struct {
         );
         try sqlite.exec(self.db,
             \\CREATE INDEX IF NOT EXISTS idx_deps_dst ON deps(dst_id);
+        );
+        try sqlite.exec(self.db,
+            \\CREATE INDEX IF NOT EXISTS idx_comments_issue_created ON comments(issue_id, created_at);
         );
     }
 
@@ -377,7 +397,7 @@ pub const Store = struct {
 
         try self.replaceTags(id, tags);
         const rowid = sqlite.lastInsertRowId(self.db);
-        try self.updateFtsRow(rowid, title, body);
+        try self.updateFtsRow(rowid, title, body, id);
 
         try self.appendIssueJsonl(id, rev, title, body, "open", priority, tags, now_ms, now_ms);
         try self.commit();
@@ -460,7 +480,7 @@ pub const Store = struct {
 
         try self.replaceTags(id, merged_tags);
         const rowid = try self.issueRowId(id);
-        try self.updateFtsRow(rowid, new_title, new_body);
+        try self.updateFtsRow(rowid, new_title, new_body, id);
 
         try self.appendIssueJsonl(id, rev, new_title, new_body, new_status, new_priority, merged_tags, issue.created_at, now_ms);
         try self.commit();
@@ -491,6 +511,9 @@ pub const Store = struct {
         try sqlite.bindText(stmt, 3, body);
         try sqlite.bindInt64(stmt, 4, now_ms);
         _ = try sqlite.step(stmt);
+
+        // Refresh FTS index to include new comment
+        try self.refreshIssueFts(issue_id);
 
         try self.appendCommentJsonl(id, issue_id, body, now_ms);
         try self.commit();
@@ -801,17 +824,55 @@ pub const Store = struct {
         return sqlite.columnInt64(stmt, 0);
     }
 
-    fn updateFtsRow(self: *Store, rowid: i64, title: []const u8, body: []const u8) !void {
+    /// Fetches and concatenates all comment bodies for an issue.
+    fn fetchConcatenatedComments(self: *Store, issue_id: []const u8) ![]u8 {
+        const stmt = try sqlite.prepare(self.db,
+            \\SELECT body FROM comments WHERE issue_id = ? ORDER BY created_at ASC;
+        );
+        defer sqlite.finalize(stmt);
+        try sqlite.bindText(stmt, 1, issue_id);
+
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(self.allocator);
+
+        while (try sqlite.step(stmt)) {
+            const comment_body = sqlite.columnText(stmt, 0);
+            if (result.items.len > 0) try result.append(self.allocator, '\n');
+            try result.appendSlice(self.allocator, comment_body);
+        }
+        return result.toOwnedSlice(self.allocator);
+    }
+
+    /// Refreshes the FTS index for an issue (used when comments change).
+    fn refreshIssueFts(self: *Store, issue_id: []const u8) !void {
+        const stmt = try sqlite.prepare(self.db,
+            \\SELECT rowid, title, body FROM issues WHERE id = ?;
+        );
+        defer sqlite.finalize(stmt);
+        try sqlite.bindText(stmt, 1, issue_id);
+
+        if (!try sqlite.step(stmt)) return StoreError.IssueNotFound;
+        const rowid = sqlite.columnInt64(stmt, 0);
+        const title = sqlite.columnText(stmt, 1);
+        const body = sqlite.columnText(stmt, 2);
+        try self.updateFtsRow(rowid, title, body, issue_id);
+    }
+
+    fn updateFtsRow(self: *Store, rowid: i64, title: []const u8, body: []const u8, issue_id: []const u8) !void {
+        const comments = try self.fetchConcatenatedComments(issue_id);
+        defer self.allocator.free(comments);
+
         const del = try sqlite.prepare(self.db, "DELETE FROM issues_fts WHERE rowid = ?;");
         defer sqlite.finalize(del);
         try sqlite.bindInt64(del, 1, rowid);
         _ = try sqlite.step(del);
 
-        const ins = try sqlite.prepare(self.db, "INSERT INTO issues_fts(rowid, title, body) VALUES (?, ?, ?);");
+        const ins = try sqlite.prepare(self.db, "INSERT INTO issues_fts(rowid, title, body, comments) VALUES (?, ?, ?, ?);");
         defer sqlite.finalize(ins);
         try sqlite.bindInt64(ins, 1, rowid);
         try sqlite.bindText(ins, 2, title);
         try sqlite.bindText(ins, 3, body);
+        try sqlite.bindText(ins, 4, comments);
         _ = try sqlite.step(ins);
     }
 
@@ -1197,7 +1258,7 @@ pub const Store = struct {
             }
         }
         try self.replaceTags(id, tags);
-        try self.updateFtsRow(rowid, title, body);
+        try self.updateFtsRow(rowid, title, body, id);
     }
 
     /// Applies a comment record from JSONL to the database.
@@ -1220,6 +1281,11 @@ pub const Store = struct {
         try sqlite.bindText(stmt, 3, body);
         try sqlite.bindInt64(stmt, 4, created_at);
         _ = try sqlite.step(stmt);
+
+        // Only refresh FTS if a row was actually inserted (not a duplicate)
+        if (sqlite.c.sqlite3_changes(self.db) > 0) {
+            try self.refreshIssueFts(issue_id);
+        }
     }
 
     /// Applies a dependency record from JSONL to the database.

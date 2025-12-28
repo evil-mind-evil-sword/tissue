@@ -483,12 +483,9 @@ tissue comment "$id" -m "fixed-in: $(git rev-parse --short HEAD)"
 
 # Link multiple related commits
 tissue comment "$id" -m "Related: abc123, def456"
-```
 
-Note: Comments are not FTS-indexed. To find issues by commit hash:
-
-```sh
-rg "abc123" .tissue/issues.jsonl
+# Search for issues by commit hash
+tissue list --search "abc123"
 ```
 
 ## Git-based sync
