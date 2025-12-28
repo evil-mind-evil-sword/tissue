@@ -1,0 +1,142 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-linux-musl
+            os: ubuntu-latest
+            artifact: tissue-x86_64-linux
+          - target: aarch64-linux-musl
+            os: ubuntu-latest
+            artifact: tissue-aarch64-linux
+          - target: x86_64-macos
+            os: macos-latest
+            artifact: tissue-x86_64-macos
+          - target: aarch64-macos
+            os: macos-latest
+            artifact: tissue-aarch64-macos
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      - name: Build
+        run: |
+          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+          mv zig-out/bin/tissue ${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for dir in artifacts/*/; do
+            name=$(basename "$dir")
+            cp "$dir/$name" "release/$name"
+            chmod +x "release/$name"
+            # Create tarball
+            tar -czvf "release/${name}.tar.gz" -C release "$name"
+            # Create sha256sum
+            (cd release && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          done
+
+      - name: Create install script
+        run: |
+          cat > release/install.sh << 'INSTALL_SCRIPT'
+          #!/bin/sh
+          set -e
+
+          # tissue installer
+          # Usage: curl -fsSL https://github.com/femtomc/tissue/releases/latest/download/install.sh | sh
+
+          REPO="femtomc/tissue"
+          INSTALL_DIR="${TISSUE_INSTALL_DIR:-/usr/local/bin}"
+
+          # Detect OS and architecture
+          OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          ARCH=$(uname -m)
+
+          case "$OS" in
+            linux) OS="linux" ;;
+            darwin) OS="macos" ;;
+            *) echo "Unsupported OS: $OS"; exit 1 ;;
+          esac
+
+          case "$ARCH" in
+            x86_64|amd64) ARCH="x86_64" ;;
+            aarch64|arm64) ARCH="aarch64" ;;
+            *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+          esac
+
+          ASSET="tissue-${ARCH}-${OS}.tar.gz"
+
+          # Get latest release URL
+          if [ -n "$TISSUE_VERSION" ]; then
+            VERSION="$TISSUE_VERSION"
+          else
+            VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+          fi
+
+          URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
+
+          echo "Downloading tissue ${VERSION} for ${OS}/${ARCH}..."
+          TMPDIR=$(mktemp -d)
+          trap "rm -rf $TMPDIR" EXIT
+
+          curl -fsSL "$URL" -o "$TMPDIR/$ASSET"
+          tar -xzf "$TMPDIR/$ASSET" -C "$TMPDIR"
+
+          # Install
+          if [ -w "$INSTALL_DIR" ]; then
+            mv "$TMPDIR/tissue-${ARCH}-${OS}" "$INSTALL_DIR/tissue"
+          else
+            echo "Installing to $INSTALL_DIR (requires sudo)..."
+            sudo mv "$TMPDIR/tissue-${ARCH}-${OS}" "$INSTALL_DIR/tissue"
+          fi
+
+          chmod +x "$INSTALL_DIR/tissue"
+          echo "tissue installed to $INSTALL_DIR/tissue"
+          echo "Run 'tissue --help' to get started"
+          INSTALL_SCRIPT
+          chmod +x release/install.sh
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/*.tar.gz
+            release/*.sha256
+            release/install.sh

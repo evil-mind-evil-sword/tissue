@@ -1,54 +1,81 @@
 # tissue
 
-Extremely fast and portable local issue tracker for agents. Combines the durability of an append-only JSONL log with the speed of an embedded SQLite cache, enabling git-friendly sync and zero-config setup. Designed as a non-interactive CLI with machine-readable JSON output and atomic file operations.
+A fast, portable issue tracker that lives in your git repo. Designed for AI agents and automation.
 
-- Uses SQLite for queries and an append-only JSONL log for sync.
-- Source of truth: `.tissue/issues.jsonl` (commit this to GitHub).
-- Local cache: `.tissue/issues.db*` (ignored by `.tissue/.gitignore`).
+tissue combines the durability of an append-only JSONL log with the speed of an embedded SQLite cache, enabling git-friendly sync and zero-config setup. It is a non-interactive CLI with machine-readable JSON output and atomic file operations.
 
-## Building
+## Features
+
+- **Agent-first**: Non-interactive CLI with JSON output, designed for automation
+- **Git-friendly sync**: Append-only JSONL log that merges cleanly
+- **Fast queries**: FTS5-enabled SQLite cache, rebuilt automatically
+- **Zero dependencies**: Statically linked Zig binary, works anywhere
+- **Atomic operations**: File locking and retry logic for concurrent access
+- **Deterministic IDs**: Prefix-hash format (e.g., `tissue-a3f8e9`)
+- **Ready queue**: Find unblocked work with `tissue ready`
+- **Dependency tracking**: `blocks`, `relates`, and `parent` edges
+
+## Why tissue?
+
+Use tissue instead of GitHub Issues when you need:
+
+- **Offline access**: Everything is local, no internet required
+- **Agent workflows**: Built for Claude, Copilot, and other AI tools
+- **Repo-local issues**: Issues travel with your code and branches
+- **No overhead**: No API limits, no auth, no cloud latency
+- **Git-native conflicts**: Standard merge tools work on the JSONL log
+
+## Installation
+
+### Quick install (macOS/Linux)
+
+```sh
+curl -fsSL https://github.com/femtomc/tissue/releases/latest/download/install.sh | sh
+```
+
+Or specify a version:
+
+```sh
+TISSUE_VERSION=v0.1.0 curl -fsSL https://github.com/femtomc/tissue/releases/latest/download/install.sh | sh
+```
+
+### Pre-built binaries
+
+Download from [GitHub Releases](https://github.com/femtomc/tissue/releases):
+
+| Platform | Architecture | Download |
+|----------|--------------|----------|
+| Linux    | x86_64       | [tissue-x86_64-linux.tar.gz](https://github.com/femtomc/tissue/releases/latest/download/tissue-x86_64-linux.tar.gz) |
+| Linux    | aarch64      | [tissue-aarch64-linux.tar.gz](https://github.com/femtomc/tissue/releases/latest/download/tissue-aarch64-linux.tar.gz) |
+| macOS    | x86_64       | [tissue-x86_64-macos.tar.gz](https://github.com/femtomc/tissue/releases/latest/download/tissue-x86_64-macos.tar.gz) |
+| macOS    | aarch64      | [tissue-aarch64-macos.tar.gz](https://github.com/femtomc/tissue/releases/latest/download/tissue-aarch64-macos.tar.gz) |
+
+### Build from source
 
 Requirements: [Zig](https://ziglang.org/) 0.15.2 or later.
 
-Build the project:
-
 ```sh
-zig build
+zig build -Doptimize=ReleaseFast
+cp zig-out/bin/tissue /usr/local/bin/
+tissue --help
 ```
 
-The binary will be located at `zig-out/bin/tissue`.
-
-You can also build and run directly:
+For development:
 
 ```sh
 zig build run -- --help
 ```
 
-## Installation
-
-Build from source as described above, then copy the binary to your `PATH`:
+## Quick Start
 
 ```sh
-cp zig-out/bin/tissue /usr/local/bin/
-```
-
-Verify the installation:
-
-```sh
-tissue --help
-```
-
-## Quick start
-
-```sh
-tissue init
+tissue init                                                # Initialize store
 id=$(tissue new "Fix flaky tests" -b "Seen in CI" -t build -p 2 --quiet)
-tissue list --status open
-tissue show "$id"
-tissue comment "$id" -m "Resolved in 8b7c0fe"
-tissue dep add "$id" blocks <target>
-tissue status "$id" closed
-tissue ready
+tissue list --status open                                  # List open issues
+tissue show "$id"                                          # View issue details
+tissue comment "$id" -m "Resolved in 8b7c0fe"              # Add a comment
+tissue status "$id" closed                                 # Close the issue
+tissue ready                                               # Show unblocked work
 ```
 
 ## Architecture
@@ -172,6 +199,7 @@ Notes:
 ## Command reference (detailed)
 
 ### tissue init
+
 Usage: `tissue init [--json] [--prefix prefix]`
 
 Creates the store directory and files.
@@ -192,6 +220,7 @@ tissue init --prefix acme --json
 ```
 
 ### tissue new
+
 Usage: `tissue new "title" [-b body] [-t tag] [-p 1-5] [--json|--quiet]`
 
 Creates a new issue.
@@ -215,6 +244,7 @@ tissue new "Follow up" --quiet
 ```
 
 ### tissue list
+
 Usage: `tissue list [--status open|in_progress|paused|duplicate|closed] [--tag tag] [--search query] [--limit N] [--json]`
 
 Lists issues, newest first.
@@ -237,6 +267,7 @@ tissue list --tag build --search "flake" --json
 ```
 
 ### tissue show
+
 Usage: `tissue show <id> [--json]`
 
 Shows full details for one issue.
@@ -251,6 +282,7 @@ tissue show tissue-a3f8e9 --json
 ```
 
 ### tissue edit
+
 Usage: `tissue edit <id> [--title t] [--body b] [--status open|in_progress|paused|duplicate|closed] [--priority 1-5] [--add-tag t] [--rm-tag t] [--json|--quiet]`
 
 Updates an issue. At least one change is required.
@@ -271,6 +303,7 @@ tissue edit tissue-a3f8e9 --body "Line 1\nLine 2"
 ```
 
 ### tissue status
+
 Usage: `tissue status <id> <open|in_progress|paused|duplicate|closed> [--json|--quiet]`
 
 Shorthand for changing only the status.
@@ -283,6 +316,7 @@ tissue status tissue-a3f8e9 closed
 ```
 
 ### tissue comment
+
 Usage: `tissue comment <id> -m "text" [--json|--quiet]`
 
 Adds a comment to an issue.
@@ -301,6 +335,7 @@ tissue comment tissue-a3f8e9 -m "Investigating root cause\nWorking on fix"
 ```
 
 ### tissue tag
+
 Usage: `tissue tag <add|rm> <id> <tag> [--json|--quiet]`
 
 Adds or removes a single tag.
@@ -314,6 +349,7 @@ tissue tag rm tissue-a3f8e9 backlog
 ```
 
 ### tissue dep
+
 Usage: `tissue dep <add|rm> <id> <blocks|relates|parent> <target> [--json|--quiet]`
 
 Adds or removes a dependency edge.
@@ -333,6 +369,7 @@ tissue dep rm tissue-a3f8e9 relates tissue-b19c2d
 ```
 
 ### tissue deps
+
 Usage: `tissue deps <id> [--json]`
 
 Lists active dependencies that involve the issue.
@@ -347,6 +384,7 @@ tissue deps tissue-a3f8e9 --json
 ```
 
 ### tissue ready
+
 Usage: `tissue ready [--json]`
 
 Lists open issues (status `open`) with no active blockers (`open`, `in_progress`, `paused`).
@@ -359,6 +397,7 @@ tissue ready --json
 ```
 
 ### tissue clean
+
 Usage: `tissue clean [--older-than Nd] [--force] [--json]`
 
 Removes closed or duplicate issues from the JSONL log (and rebuilds the cache).
