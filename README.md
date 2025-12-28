@@ -1,10 +1,42 @@
 # tissue
 
-Extremely fast and portable local issue tracker for agents. 
+Extremely fast and portable local issue tracker for agents. Combines the durability of an append-only JSONL log with the speed of an embedded SQLite cache, enabling git-friendly sync and zero-config setup. Designed as a non-interactive CLI with machine-readable JSON output and atomic file operations.
 
 - Uses SQLite for queries and an append-only JSONL log for sync.
 - Source of truth: `.tissue/issues.jsonl` (commit this to GitHub).
 - Local cache: `.tissue/issues.db*` (ignored by `.tissue/.gitignore`).
+
+## Building
+
+Requirements: [Zig](https://ziglang.org/) 0.15.2 or later.
+
+Build the project:
+
+```sh
+zig build
+```
+
+The binary will be located at `zig-out/bin/tissue`.
+
+You can also build and run directly:
+
+```sh
+zig build run -- --help
+```
+
+## Installation
+
+Build from source as described above, then copy the binary to your `PATH`:
+
+```sh
+cp zig-out/bin/tissue /usr/local/bin/
+```
+
+Verify the installation:
+
+```sh
+tissue --help
+```
 
 ## Quick start
 
@@ -17,6 +49,23 @@ tissue comment "$id" -m "Resolved in 8b7c0fe"
 tissue dep add "$id" blocks <target>
 tissue status "$id" closed
 tissue ready
+```
+
+## Architecture
+
+tissue uses a dual-storage architecture to balance durability with performance:
+
+- **Source of truth (`.tissue/issues.jsonl`):** An append-only, line-delimited JSON file. This format is git-friendly and allows for easy conflict resolution via standard merge tools. Each operation appends a new record; the latest record for each entity wins.
+
+- **Derived cache (`.tissue/issues.db`):** A local SQLite database with FTS5 enabled for full-text search. SQLite is statically linked (vendored) with no external dependencies.
+
+On every command, tissue checks if the JSONL file has changed (via inode, size, or mtime). If changes are detected, the SQLite cache is automatically synced from the log. Writing to the store updates both files atomically using file locking to ensure safety in concurrent environments.
+
+Because the SQLite database is derived from the JSONL log, it can be deleted at any time. Running any tissue command will rebuild it:
+
+```sh
+rm .tissue/issues.db*
+tissue list  # rebuilds the cache
 ```
 
 ## Agent-first CLI contract

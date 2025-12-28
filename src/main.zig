@@ -1,3 +1,14 @@
+//! Command-line interface for the tissue issue tracker.
+//!
+//! This module provides the main entry point and command dispatch for the
+//! tissue CLI. It handles argument parsing, store discovery, and formatting
+//! of output (both human-readable and JSON).
+//!
+//! Commands: init, new, list, show, edit, status, comment, tag, dep, deps, ready, clean
+//!
+//! Store discovery: Uses TISSUE_STORE environment variable, or walks up
+//! the directory tree looking for a .tissue directory.
+
 const std = @import("std");
 const tissue = @import("tissue");
 
@@ -837,13 +848,14 @@ fn rewriteJsonlWithoutIssues(allocator: std.mem.Allocator, store: *Store, ids_to
     const jsonl_content = try allocator.alloc(u8, stat.size);
     defer allocator.free(jsonl_content);
     const bytes_read = try jsonl_file.readAll(jsonl_content);
-    _ = bytes_read;
+    // Use only the portion that was actually read
+    const actual_content = jsonl_content[0..bytes_read];
 
     // Create new JSONL content
     var new_content: std.ArrayList(u8) = .empty;
     defer new_content.deinit(allocator);
 
-    var lines = std.mem.splitScalar(u8, jsonl_content, '\n');
+    var lines = std.mem.splitScalar(u8, actual_content, '\n');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
 

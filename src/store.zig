@@ -1,19 +1,45 @@
+//! Core persistence layer for the tissue issue tracker.
+//!
+//! This module manages storage and retrieval of issues, comments, and dependencies.
+//! It uses an append-only JSONL file for durable, git-friendly storage, paired with
+//! an SQLite database for efficient querying and full-text search. The SQLite cache
+//! is rebuilt automatically from the JSONL log when needed.
+
 const std = @import("std");
 const sqlite = @import("sqlite.zig");
 const ids = @import("ids.zig");
 
+/// Errors that can occur during store operations.
 pub const StoreError = error{
+    /// No .tissue directory found in current or parent directories.
     StoreNotFound,
+    /// The specified issue ID does not exist.
     IssueNotFound,
+    /// The provided ID prefix matches multiple issues.
     IssueIdAmbiguous,
+    /// The input issue ID is malformed or invalid.
     InvalidIdPrefix,
+    /// The project prefix is malformed.
     InvalidPrefix,
+    /// Unknown dependency kind. Valid kinds: blocks, relates, parent.
     InvalidDepKind,
+    /// An issue cannot declare a dependency on itself.
     SelfDependency,
+    /// Could not generate a unique issue ID after max retries.
     IssueIdCollision,
+    /// SQLite database is locked after exhausting retries.
     DatabaseBusy,
+    /// Invalid JSONL record encountered during import.
+    MalformedRecord,
 } || sqlite.Error;
 
+/// Represents a tracked issue.
+///
+/// Issue IDs are in the format PREFIX-HASH (e.g., "tissue-a3f8e9").
+/// Status values: open, in_progress, paused, duplicate, closed.
+/// Priority ranges from 1 (highest) to 5 (lowest).
+/// The rev field is a ULID used for conflict resolution during sync.
+/// Timestamps are milliseconds since Unix epoch.
 pub const Issue = struct {
     id: []const u8,
     title: []const u8,
@@ -25,6 +51,7 @@ pub const Issue = struct {
     rev: []const u8,
     tags: []const []const u8,
 
+    /// Releases all memory allocated for this issue's fields.
     pub fn deinit(self: *Issue, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.title);
@@ -36,12 +63,16 @@ pub const Issue = struct {
     }
 };
 
+/// A comment attached to an issue.
+///
+/// Comments are immutable once created. The id is a ULID.
 pub const Comment = struct {
     id: []const u8,
     issue_id: []const u8,
     body: []const u8,
     created_at: i64,
 
+    /// Releases all memory allocated for this comment's fields.
     pub fn deinit(self: *Comment, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.issue_id);
@@ -49,6 +80,14 @@ pub const Comment = struct {
     }
 };
 
+/// A dependency relationship between two issues.
+///
+/// Dependency kinds:
+/// - blocks: src_id blocks dst_id (dst cannot proceed until src is done)
+/// - parent: src_id is a parent of dst_id (hierarchical relationship)
+/// - relates: bidirectional relationship (src and dst are normalized to consistent order)
+///
+/// State is either "active" or "removed". The rev field is a ULID for conflict resolution.
 pub const Dep = struct {
     src_id: []const u8,
     dst_id: []const u8,
@@ -57,6 +96,7 @@ pub const Dep = struct {
     created_at: i64,
     rev: []const u8,
 
+    /// Releases all memory allocated for this dependency's fields.
     pub fn deinit(self: *Dep, allocator: std.mem.Allocator) void {
         allocator.free(self.src_id);
         allocator.free(self.dst_id);
@@ -66,6 +106,11 @@ pub const Dep = struct {
     }
 };
 
+/// The main data store for issues, comments, and dependencies.
+///
+/// Manages both the SQLite cache (for fast queries) and the JSONL append log
+/// (for durable, git-friendly persistence). Changes are written to both atomically.
+/// The SQLite database is rebuilt from the JSONL log on startup if needed.
 pub const Store = struct {
     allocator: std.mem.Allocator,
     db: *sqlite.c.sqlite3,
@@ -76,13 +121,21 @@ pub const Store = struct {
     id_prefix: []const u8,
     lock_file: ?std.fs.File = null,
 
+    /// Opens or creates a store at the given directory path.
+    ///
+    /// Initializes the SQLite database, sets up the schema, and loads the ID prefix.
+    /// The caller must call deinit() when done to release resources.
     pub fn open(allocator: std.mem.Allocator, store_dir: []const u8) !Store {
         const db_path = try std.fs.path.join(allocator, &.{ store_dir, "issues.db" });
         errdefer allocator.free(db_path);
         const jsonl_path = try std.fs.path.join(allocator, &.{ store_dir, "issues.jsonl" });
         errdefer allocator.free(jsonl_path);
 
-        const db = try sqlite.open(db_path);
+        // Create null-terminated path for SQLite C API
+        const db_path_z = try allocator.dupeZ(u8, db_path);
+        defer allocator.free(db_path_z);
+
+        const db = try sqlite.open(db_path_z);
         errdefer sqlite.close(db);
 
         var store = Store{
@@ -104,6 +157,7 @@ pub const Store = struct {
         return store;
     }
 
+    /// Closes the store and releases all associated resources.
     pub fn deinit(self: *Store) void {
         sqlite.close(self.db);
         self.allocator.free(self.store_dir);
@@ -142,6 +196,9 @@ pub const Store = struct {
         self.id_prefix = derived;
     }
 
+    /// Sets the project prefix used for generating new issue IDs.
+    ///
+    /// The prefix is normalized (lowercased, special chars replaced with hyphens).
     pub fn setIdPrefix(self: *Store, prefix: []const u8) !void {
         const normalized = try normalizePrefix(self.allocator, prefix);
         errdefer self.allocator.free(normalized);
@@ -150,6 +207,10 @@ pub const Store = struct {
         self.id_prefix = normalized;
     }
 
+    /// Creates the database schema if it doesn't exist.
+    ///
+    /// Called automatically by open(). Creates tables for issues, tags, comments,
+    /// dependencies, and metadata, plus indexes for efficient querying.
     pub fn ensureSchema(self: *Store) !void {
         try sqlite.exec(self.db,
             \\CREATE TABLE IF NOT EXISTS issues (
@@ -224,6 +285,9 @@ pub const Store = struct {
         );
     }
 
+    /// Configures SQLite pragmas for performance and reliability.
+    ///
+    /// Enables WAL mode, sets a 5-minute busy timeout, and enables foreign keys.
     pub fn setPragmas(self: *Store) !void {
         try sqlite.exec(self.db, "PRAGMA journal_mode=WAL;");
         try sqlite.exec(self.db, "PRAGMA synchronous=NORMAL;");
@@ -232,6 +296,7 @@ pub const Store = struct {
         try sqlite.exec(self.db, "PRAGMA foreign_keys=ON;");
     }
 
+    /// Ensures the JSONL file exists, creating it if necessary.
     pub fn ensureJsonl(self: *Store) !void {
         if (fileExists(self.jsonl_path)) return;
         var file = try std.fs.createFileAbsolute(self.jsonl_path, .{});
@@ -241,6 +306,11 @@ pub const Store = struct {
         try self.setMetaInt("jsonl_mtime", 0);
     }
 
+    /// Imports new records from the JSONL file if it has changed.
+    ///
+    /// Detects changes by comparing file inode, size, and mtime. If the file
+    /// was replaced or truncated, performs a full reimport. Otherwise, imports
+    /// only new records appended since the last import.
     pub fn importIfNeeded(self: *Store) !void {
         try self.ensureJsonl();
         const stat = try statFile(self.jsonl_path);
@@ -260,6 +330,11 @@ pub const Store = struct {
         try self.importFromOffset(stored_offset);
     }
 
+    /// Creates a new issue with status "open".
+    ///
+    /// Generates a unique issue ID in the format PREFIX-HASH. Returns the
+    /// allocated ID string; the caller owns this memory. Automatically retries
+    /// on database contention.
     pub fn createIssue(
         self: *Store,
         title: []const u8,
@@ -309,6 +384,10 @@ pub const Store = struct {
         return id;
     }
 
+    /// Updates an existing issue's fields.
+    ///
+    /// Pass null for any field to leave it unchanged. Tags are merged: add_tags
+    /// are added, rm_tags are removed. Automatically retries on database contention.
     pub fn updateIssue(
         self: *Store,
         id: []const u8,
@@ -387,6 +466,9 @@ pub const Store = struct {
         try self.commit();
     }
 
+    /// Adds a comment to an issue.
+    ///
+    /// Returns the allocated comment ID (a ULID); the caller owns this memory.
     pub fn addComment(self: *Store, issue_id: []const u8, body: []const u8) ![]u8 {
         return retryWrite([]u8, addCommentOnce, .{ self, issue_id, body });
     }
@@ -415,6 +497,10 @@ pub const Store = struct {
         return id;
     }
 
+    /// Adds a dependency between two issues.
+    ///
+    /// Valid kinds: "blocks", "relates", "parent". For "relates", the src/dst
+    /// order is normalized for consistency. Returns SelfDependency if src_id == dst_id.
     pub fn addDep(self: *Store, src_id: []const u8, kind: []const u8, dst_id: []const u8) !void {
         return retryWrite(void, addDepOnce, .{ self, src_id, kind, dst_id });
     }
@@ -450,6 +536,10 @@ pub const Store = struct {
         try self.commit();
     }
 
+    /// Removes (soft-deletes) a dependency between two issues.
+    ///
+    /// The dependency is marked as "removed" rather than deleted, allowing
+    /// conflict resolution during sync.
     pub fn removeDep(self: *Store, src_id: []const u8, kind: []const u8, dst_id: []const u8) !void {
         return retryWrite(void, removeDepOnce, .{ self, src_id, kind, dst_id });
     }
@@ -485,6 +575,11 @@ pub const Store = struct {
         try self.commit();
     }
 
+    /// Resolves a user-provided ID input to a full issue ID.
+    ///
+    /// Accepts: full ID, unique prefix, or hash-only prefix (without dash).
+    /// Returns the allocated full ID; the caller owns this memory.
+    /// Returns IssueIdAmbiguous if the prefix matches multiple issues.
     pub fn resolveIssueId(self: *Store, input: []const u8) ![]u8 {
         if (input.len == 0) return StoreError.InvalidIdPrefix;
         if (!isValidIdInput(input)) return StoreError.InvalidIdPrefix;
@@ -545,6 +640,7 @@ pub const Store = struct {
         return match;
     }
 
+    /// Fetches a single issue by ID, including all its tags.
     pub fn fetchIssue(self: *Store, id: []const u8) !Issue {
         const stmt = try sqlite.prepare(self.db,
             \\SELECT id, title, body, status, priority, created_at, updated_at, rev
@@ -555,15 +651,27 @@ pub const Store = struct {
         if (!try sqlite.step(stmt)) return StoreError.IssueNotFound;
 
         const issue_id = try dupColumn(self.allocator, stmt, 0);
+        errdefer self.allocator.free(issue_id);
+
         const title = try dupColumn(self.allocator, stmt, 1);
+        errdefer self.allocator.free(title);
+
         const body = try dupColumn(self.allocator, stmt, 2);
+        errdefer self.allocator.free(body);
+
         const status = try dupColumn(self.allocator, stmt, 3);
+        errdefer self.allocator.free(status);
+
         const priority = sqlite.columnInt(stmt, 4);
         const created_at = sqlite.columnInt64(stmt, 5);
         const updated_at = sqlite.columnInt64(stmt, 6);
+
         const rev = try dupColumn(self.allocator, stmt, 7);
+        errdefer self.allocator.free(rev);
 
         const tags = try self.fetchTags(issue_id);
+        // No errdefer needed for tags - if we got here, function returns successfully
+
         return Issue{
             .id = issue_id,
             .title = title,
@@ -577,6 +685,9 @@ pub const Store = struct {
         };
     }
 
+    /// Fetches all comments for an issue, ordered by creation time.
+    ///
+    /// Returns an allocated slice; the caller must free each comment and the slice.
     pub fn fetchComments(self: *Store, id: []const u8) ![]Comment {
         const stmt = try sqlite.prepare(self.db,
             \\SELECT id, issue_id, body, created_at
@@ -602,6 +713,9 @@ pub const Store = struct {
         return list.toOwnedSlice(self.allocator);
     }
 
+    /// Fetches all active dependencies involving an issue (as src or dst).
+    ///
+    /// Returns an allocated slice; the caller must free each dep and the slice.
     pub fn fetchDeps(self: *Store, id: []const u8) ![]Dep {
         const stmt = try sqlite.prepare(self.db,
             \\SELECT src_id, dst_id, kind, state, created_at, rev
@@ -632,6 +746,9 @@ pub const Store = struct {
         return list.toOwnedSlice(self.allocator);
     }
 
+    /// Fetches all tags for an issue, sorted alphabetically.
+    ///
+    /// Returns an allocated slice; the caller must free each tag and the slice.
     pub fn fetchTags(self: *Store, id: []const u8) ![]const []const u8 {
         const stmt = try sqlite.prepare(self.db,
             \\SELECT t.name
@@ -818,12 +935,14 @@ pub const Store = struct {
         try self.appendJsonlAtomic(payload);
     }
 
+    /// Atomically appends a payload to the JSONL file under an exclusive lock.
+    /// The lock is held for the entire operation including the metadata update.
     fn appendJsonlAtomic(self: *Store, payload: []const u8) !void {
-        // Acquire lock file (blocking)
+        // Acquire exclusive lock for the entire operation
         if (self.lock_file) |*lf| {
             try lf.lock(.exclusive);
-            defer lf.unlock();
         }
+        defer if (self.lock_file) |*lf| lf.unlock();
 
         // Open and write to JSONL file
         var file = try std.fs.openFileAbsolute(self.jsonl_path, .{ .mode = .read_write });
@@ -842,7 +961,8 @@ pub const Store = struct {
         try self.execWithRetry("COMMIT;");
     }
 
-    fn execWithRetry(self: *Store, sql: []const u8) !void {
+    /// Executes a SQL statement with retry logic for busy/locked conditions.
+    fn execWithRetry(self: *Store, sql: [:0]const u8) !void {
         // SQLite's busy_timeout provides primary waiting; manual retries provide backup
         var attempt: u32 = 0;
         const max_attempts: u32 = 10;
@@ -961,6 +1081,10 @@ pub const Store = struct {
         try self.updateJsonlMetaForStat(stat, new_offset);
     }
 
+    /// Forces a complete reimport of the JSONL file into SQLite.
+    ///
+    /// Clears all tables and rebuilds from the JSONL log. Use after external
+    /// modifications to the JSONL file (e.g., after clean command).
     pub fn forceReimport(self: *Store) !void {
         try self.fullReimport();
     }
@@ -999,15 +1123,17 @@ pub const Store = struct {
         }
     }
 
+    /// Applies an issue record from JSONL to the database.
+    /// Returns MalformedRecord error if required fields are missing or have wrong types.
     fn applyIssueRecord(self: *Store, obj: std.json.ObjectMap) !void {
-        const id = obj.get("id").?.string;
-        const rev = obj.get("rev").?.string;
-        const title = obj.get("title").?.string;
-        const body = obj.get("body").?.string;
-        const status = obj.get("status").?.string;
-        const priority = @as(i32, @intCast(obj.get("priority").?.integer));
-        const created_at = @as(i64, @intCast(obj.get("created_at").?.integer));
-        const updated_at = @as(i64, @intCast(obj.get("updated_at").?.integer));
+        const id = try getJsonString(obj, "id");
+        const rev = try getJsonString(obj, "rev");
+        const title = try getJsonString(obj, "title");
+        const body = try getJsonString(obj, "body");
+        const status = try getJsonString(obj, "status");
+        const priority = @as(i32, @intCast(try getJsonInt(obj, "priority")));
+        const created_at = try getJsonInt(obj, "created_at");
+        const updated_at = try getJsonInt(obj, "updated_at");
         const tags_val = obj.get("tags");
 
         const stmt = try sqlite.prepare(self.db, "SELECT rev, updated_at, rowid FROM issues WHERE id = ?;");
@@ -1074,11 +1200,13 @@ pub const Store = struct {
         try self.updateFtsRow(rowid, title, body);
     }
 
+    /// Applies a comment record from JSONL to the database.
+    /// Returns MalformedRecord error if required fields are missing or have wrong types.
     fn applyCommentRecord(self: *Store, obj: std.json.ObjectMap) !void {
-        const id = obj.get("id").?.string;
-        const issue_id = obj.get("issue_id").?.string;
-        const body = obj.get("body").?.string;
-        const created_at = @as(i64, @intCast(obj.get("created_at").?.integer));
+        const id = try getJsonString(obj, "id");
+        const issue_id = try getJsonString(obj, "issue_id");
+        const body = try getJsonString(obj, "body");
+        const created_at = try getJsonInt(obj, "created_at");
 
         if (!try self.issueExists(issue_id)) return StoreError.IssueNotFound;
 
@@ -1094,13 +1222,15 @@ pub const Store = struct {
         _ = try sqlite.step(stmt);
     }
 
+    /// Applies a dependency record from JSONL to the database.
+    /// Returns MalformedRecord error if required fields are missing or have wrong types.
     fn applyDepRecord(self: *Store, obj: std.json.ObjectMap) !void {
-        const src_id = obj.get("src_id").?.string;
-        const dst_id = obj.get("dst_id").?.string;
-        const kind = obj.get("kind").?.string;
-        const state = obj.get("state").?.string;
-        const created_at = @as(i64, @intCast(obj.get("created_at").?.integer));
-        const rev = obj.get("rev").?.string;
+        const src_id = try getJsonString(obj, "src_id");
+        const dst_id = try getJsonString(obj, "dst_id");
+        const kind = try getJsonString(obj, "kind");
+        const state = try getJsonString(obj, "state");
+        const created_at = try getJsonInt(obj, "created_at");
+        const rev = try getJsonString(obj, "rev");
 
         const stmt = try sqlite.prepare(self.db,
             \\INSERT INTO deps(src_id, dst_id, kind, state, created_at, rev)
@@ -1329,6 +1459,7 @@ const DepNormalized = struct {
     }
 };
 
+/// Normalizes a dependency, ensuring consistent ordering for "relates" kind.
 fn normalizeDep(kind: []const u8, src_id: []const u8, dst_id: []const u8, allocator: std.mem.Allocator) !DepNormalized {
     // Reject self-dependencies
     if (std.mem.eql(u8, src_id, dst_id)) {
@@ -1449,4 +1580,20 @@ fn statFile(path: []const u8) !std.fs.File.Stat {
     var file = try std.fs.openFileAbsolute(path, .{});
     defer file.close();
     return try file.stat();
+}
+
+/// Safely extracts a string field from a JSON object.
+/// Returns MalformedRecord error if the field is missing or not a string.
+fn getJsonString(obj: std.json.ObjectMap, key: []const u8) StoreError![]const u8 {
+    const val = obj.get(key) orelse return StoreError.MalformedRecord;
+    if (val != .string) return StoreError.MalformedRecord;
+    return val.string;
+}
+
+/// Safely extracts an integer field from a JSON object.
+/// Returns MalformedRecord error if the field is missing or not an integer.
+fn getJsonInt(obj: std.json.ObjectMap, key: []const u8) StoreError!i64 {
+    const val = obj.get(key) orelse return StoreError.MalformedRecord;
+    if (val != .integer) return StoreError.MalformedRecord;
+    return val.integer;
 }
