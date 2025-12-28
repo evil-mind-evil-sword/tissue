@@ -474,6 +474,23 @@ tissue --store .claude/.tissue new "Agent task" --quiet
 tissue --store .claude/.tissue list --json
 ```
 
+Link commits to issues (use comments, not automatic capture):
+
+```sh
+# Link fix commit when closing
+tissue status "$id" closed
+tissue comment "$id" -m "fixed-in: $(git rev-parse --short HEAD)"
+
+# Link multiple related commits
+tissue comment "$id" -m "Related: abc123, def456"
+```
+
+Note: Comments are not FTS-indexed. To find issues by commit hash:
+
+```sh
+rg "abc123" .tissue/issues.jsonl
+```
+
 ## Git-based sync
 
 Source of truth is the JSONL log. Sync it with Git:
