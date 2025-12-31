@@ -115,6 +115,10 @@ pub fn main() !void {
         printUsage();
         return;
     }
+    if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-V")) {
+        try stdout.writeAll("tissue 0.3.1\n");
+        return;
+    }
     if (std.mem.eql(u8, cmd, "help")) {
         if (cmd_args.len >= 1) {
             const topic = cmd_args[0];
