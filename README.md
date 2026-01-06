@@ -7,7 +7,7 @@ A machine-first issue tracker optimized for agents, featuring a git-native data 
 ## Install
 
 ```sh
-curl -fsSL https://github.com/evil-mind-evil-sword/tissue/releases/latest/download/install.sh | sh
+curl -fsSL https://evil-mind-evil-sword.github.io/releases/tissue/install.sh | sh
 ```
 
 <details>
