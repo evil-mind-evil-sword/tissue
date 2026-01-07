@@ -93,7 +93,7 @@ The JSONL log is the source of truth. The SQLite cache is rebuilt automatically 
 
 ## Related
 
-tissue was directly inspired by [Beads](https://github.com/steveyegge/beads), Steve Yegge's memory system for coding agents. Beads introduced the pattern of JSONL-backed issue tracking with SQLite caching, dependency graphs, and agent-friendly `--json` flags. tissue adopts the same architecture while focusing on simplicity and the emes plugin ecosystem.
+tissue was directly inspired by [Beads](https://github.com/steveyegge/beads), Steve Yegge's memory system for coding agents. Beads introduced the pattern of JSONL-backed issue tracking with SQLite caching, dependency graphs, and agent-friendly `--json` flags. tissue adopts the same architecture while focusing on simplicity and a less aggressive development model.
 
 **Agent-Focused CLI Tools.** The 2024-2025 explosion of agentic coding tools—[Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Aider](https://aider.chat/), [Codex CLI](https://github.com/openai/codex)—created demand for agent-native infrastructure. These tools work best with explicit context files and non-interactive utilities that compose in scripts and pipelines.
 
