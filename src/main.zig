@@ -1447,23 +1447,14 @@ fn processEscapes(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 }
 
 /// Discovers an existing store directory.
-/// Priority: override (--store) > TISSUE_STORE env > directory walk
+/// Priority: override (--store) > directory walk > TISSUE_STORE env
 fn discoverStoreDir(allocator: std.mem.Allocator, override: ?[]const u8) ![]const u8 {
     // Priority 1: --store flag
     if (override) |path| {
         return resolvePath(allocator, path);
     }
 
-    // Priority 2: TISSUE_STORE environment variable
-    if (std.process.getEnvVarOwned(allocator, "TISSUE_STORE")) |env| {
-        defer allocator.free(env);
-        return resolvePath(allocator, env);
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-
-    // Priority 3: Walk up directory tree
+    // Priority 2: Walk up directory tree (local stores take precedence)
     const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd);
     var current: []const u8 = cwd;
@@ -1475,18 +1466,8 @@ fn discoverStoreDir(allocator: std.mem.Allocator, override: ?[]const u8) ![]cons
         if (std.mem.eql(u8, parent, current)) break;
         current = parent;
     }
-    return tissue.store.StoreError.StoreNotFound;
-}
 
-/// Determines the store directory for initialization.
-/// Priority: override (--store) > TISSUE_STORE env > cwd/.tissue
-fn initStoreDir(allocator: std.mem.Allocator, override: ?[]const u8) ![]const u8 {
-    // Priority 1: --store flag
-    if (override) |path| {
-        return resolvePath(allocator, path);
-    }
-
-    // Priority 2: TISSUE_STORE environment variable
+    // Priority 3: TISSUE_STORE environment variable (fallback)
     if (std.process.getEnvVarOwned(allocator, "TISSUE_STORE")) |env| {
         defer allocator.free(env);
         return resolvePath(allocator, env);
@@ -1495,10 +1476,40 @@ fn initStoreDir(allocator: std.mem.Allocator, override: ?[]const u8) ![]const u8
         else => return err,
     }
 
-    // Priority 3: Default to cwd/.tissue
+    return tissue.store.StoreError.StoreNotFound;
+}
+
+/// Determines the store directory for initialization.
+/// Priority: override (--store) > cwd/.tissue > TISSUE_STORE env
+fn initStoreDir(allocator: std.mem.Allocator, override: ?[]const u8) ![]const u8 {
+    // Priority 1: --store flag
+    if (override) |path| {
+        return resolvePath(allocator, path);
+    }
+
+    // Priority 2: Default to cwd/.tissue (local stores take precedence)
     const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd);
-    return std.fs.path.join(allocator, &.{ cwd, ".tissue" });
+    const local_store = try std.fs.path.join(allocator, &.{ cwd, ".tissue" });
+
+    // If local store exists, use it
+    if (dirExists(local_store)) return local_store;
+
+    // Priority 3: TISSUE_STORE environment variable (fallback for new stores)
+    if (std.process.getEnvVarOwned(allocator, "TISSUE_STORE")) |env| {
+        defer allocator.free(env);
+        allocator.free(local_store);
+        return resolvePath(allocator, env);
+    } else |err| switch (err) {
+        error.EnvironmentVariableNotFound => {},
+        else => {
+            allocator.free(local_store);
+            return err;
+        },
+    }
+
+    // No env var set, use local cwd/.tissue
+    return local_store;
 }
 
 fn resolvePath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -1562,7 +1573,7 @@ fn printUsage() void {
         \\
         \\Behavior (agent-friendly):
         \\  Exit codes: 0 success, 1 failure (errors on stderr)
-        \\  Store discovery: --store wins; else TISSUE_STORE; else walk up for .tissue
+        \\  Store discovery: --store wins; else walk up for .tissue; else TISSUE_STORE
         \\  --json outputs minified JSON with a trailing newline
         \\  --quiet outputs id only (new/edit/status/comment/tag/dep; overrides --json)
         \\  Body/message expands \n, \t, and \\
@@ -1655,7 +1666,7 @@ fn printCommandHelp(cmd: []const u8) bool {
             \\
             \\Description:
             \\  Creates the .tissue store directory and files. If it already exists,
-            \\  it is reused. Store discovery uses TISSUE_STORE or walks up for .tissue.
+            \\  it is reused. Store discovery walks up for .tissue, then falls back to TISSUE_STORE.
             \\
             \\Options:
             \\  --prefix <p>  set or update the issue id prefix
