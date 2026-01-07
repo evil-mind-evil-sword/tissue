@@ -13,7 +13,7 @@ curl -fsSL https://evil-mind-evil-sword.github.io/releases/tissue/install.sh | s
 <details>
 <summary>Other methods</summary>
 
-**Pre-built binaries:** [GitHub Releases](https://github.com/evil-mind-evil-sword/tissue/releases)
+**Pre-built binaries:** [emes releases](https://evil-mind-evil-sword.github.io/releases/tissue/)
 
 **From source** (requires [Zig](https://ziglang.org/) 0.15.2+):
 ```sh
