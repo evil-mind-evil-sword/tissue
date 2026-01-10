@@ -11,6 +11,8 @@
 const std = @import("std");
 const tissue = @import("tissue");
 const build_options = @import("build_options");
+const termcat = @import("termcat");
+const cli = termcat.cli;
 
 const Store = tissue.store.Store;
 
@@ -40,11 +42,11 @@ fn parseGlobalOptions(args: []const []const u8) ParsedArgs {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--store")) {
             if (i + 1 >= args.len) {
-                die("missing value for --store", .{});
+                cli.die("missing value for --store", .{});
             }
             const path = args[i + 1];
             if (path.len == 0) {
-                die("--store path cannot be empty", .{});
+                cli.die("--store path cannot be empty", .{});
             }
             result.global.store_path = path;
             i += 2;
@@ -53,7 +55,7 @@ fn parseGlobalOptions(args: []const []const u8) ParsedArgs {
             // Support --store=path syntax
             const path = arg[store_eq_prefix.len..];
             if (path.len == 0) {
-                die("--store path cannot be empty", .{});
+                cli.die("--store path cannot be empty", .{});
             }
             result.global.store_path = path;
             i += 1;
@@ -65,7 +67,7 @@ fn parseGlobalOptions(args: []const []const u8) ParsedArgs {
             break;
         } else if (std.mem.startsWith(u8, arg, "--")) {
             // Unknown long global flag
-            die("unknown global option: {s}\nGlobal options must come before the command. Use 'tissue --help' for usage.", .{arg});
+            cli.die("unknown global option: {s}\nGlobal options must come before the command. Use 'tissue --help' for usage.", .{arg});
         } else if (arg.len > 1 and arg[0] == '-' and arg[1] != '-') {
             // Short flags like -h belong to commands, not global options
             // Let them pass through to be handled as commands (will error appropriately)
@@ -95,10 +97,7 @@ pub fn main() !void {
     const args = try args_list.toOwnedSlice(allocator);
     defer allocator.free(args);
 
-    var stdout_buf: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
-    const stdout = &stdout_writer.interface;
-    defer stdout.flush() catch {};
+    var output = cli.Output.initWithAllocator(allocator);
 
     // Parse global options (--store) before the command
     const parsed = parseGlobalOptions(args);
@@ -117,7 +116,7 @@ pub fn main() !void {
         return;
     }
     if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-V")) {
-        try stdout.print("tissue {s}\n", .{build_options.version});
+        try output.print("tissue {s}\n", .{build_options.version});
         return;
     }
     if (std.mem.eql(u8, cmd, "help")) {
@@ -128,7 +127,7 @@ pub fn main() !void {
                 return;
             }
             if (!printCommandHelp(topic)) {
-                die("unknown command: {s}", .{topic});
+                cli.die("unknown command: {s}", .{topic});
             }
             return;
         }
@@ -137,7 +136,7 @@ pub fn main() !void {
     }
 
     if (std.mem.eql(u8, cmd, "init")) {
-        cmdInit(allocator, stdout, cmd_args, parsed.global.store_path) catch |err| {
+        cmdInit(allocator, &output, cmd_args, parsed.global.store_path) catch |err| {
             dieOnError(err);
         };
         return;
@@ -158,33 +157,33 @@ pub fn main() !void {
 
     const result: anyerror!void = blk: {
         if (std.mem.eql(u8, cmd, "new") or std.mem.eql(u8, cmd, "post")) {
-            break :blk cmdNew(allocator, stdout, &store, cmd_args);
+            break :blk cmdNew(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "list")) {
-            break :blk cmdList(allocator, stdout, &store, cmd_args);
+            break :blk cmdList(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "search")) {
-            break :blk cmdSearch(allocator, stdout, &store, cmd_args);
+            break :blk cmdSearch(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "show")) {
-            break :blk cmdShow(allocator, stdout, &store, cmd_args);
+            break :blk cmdShow(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "edit")) {
-            break :blk cmdEdit(allocator, stdout, &store, cmd_args);
+            break :blk cmdEdit(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "status")) {
-            break :blk cmdStatus(allocator, stdout, &store, cmd_args);
+            break :blk cmdStatus(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "comment") or std.mem.eql(u8, cmd, "reply")) {
-            break :blk cmdComment(allocator, stdout, &store, cmd_args);
+            break :blk cmdComment(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "tag")) {
-            break :blk cmdTag(allocator, stdout, &store, cmd_args);
+            break :blk cmdTag(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "dep")) {
-            break :blk cmdDep(allocator, stdout, &store, cmd_args);
+            break :blk cmdDep(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "deps")) {
-            break :blk cmdDeps(allocator, stdout, &store, cmd_args);
+            break :blk cmdDeps(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "ready")) {
-            break :blk cmdReady(allocator, stdout, &store, cmd_args);
+            break :blk cmdReady(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "clean")) {
-            break :blk cmdClean(allocator, stdout, &store, cmd_args);
+            break :blk cmdClean(allocator, &output, &store, cmd_args);
         } else if (std.mem.eql(u8, cmd, "migrate")) {
-            break :blk cmdMigrate(allocator, stdout, &store, cmd_args);
+            break :blk cmdMigrate(allocator, &output, &store, cmd_args);
         } else {
-            die("unknown command: {s}", .{cmd});
+            cli.die("unknown command: {s}", .{cmd});
         }
     };
 
@@ -193,19 +192,21 @@ pub fn main() !void {
     };
 }
 
-fn cmdInit(allocator: std.mem.Allocator, stdout: *std.Io.Writer, args: []const []const u8, store_override: ?[]const u8) !void {
+fn cmdInit(allocator: std.mem.Allocator, output: *cli.Output, args: []const []const u8, store_override: ?[]const u8) !void {
     var json = false;
     var prefix: ?[]const u8 = null;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--json")) {
+        if (cli.matchesFlag(args[i], null, "json")) {
             json = true;
-        } else if (std.mem.eql(u8, args[i], "--prefix")) {
+        } else if (cli.matchesFlag(args[i], null, "prefix")) {
             prefix = nextValue(args, &i, "prefix");
         } else {
-            die("unexpected argument: {s}", .{args[i]});
+            cli.die("unexpected argument: {s}", .{args[i]});
         }
     }
+
+    output.setModeFromFlags(json, false, false, false);
 
     const store_dir = try initStoreDir(allocator, store_override);
     defer allocator.free(store_dir);
@@ -250,26 +251,13 @@ fn cmdInit(allocator: std.mem.Allocator, stdout: *std.Io.Writer, args: []const [
         try store.setIdPrefix(value);
     }
 
-    if (json) {
-        if (already_init) {
-            std.debug.print("store already exists at {s}\n", .{store_dir});
-        }
-        const record = struct {
-            store: []const u8,
-            prefix: []const u8,
-        }{ .store = store_dir, .prefix = store.id_prefix };
-        try std.json.Stringify.value(record, .{ .whitespace = .minified }, stdout);
-        try stdout.writeByte('\n');
-    } else {
-        if (already_init) {
-            try stdout.print("already initialized {s} (prefix: {s})\n", .{ store_dir, store.id_prefix });
-        } else {
-            try stdout.print("initialized {s} (prefix: {s})\n", .{ store_dir, store.id_prefix });
-        }
+    if (already_init and output.mode == .human) {
+        std.debug.print("store already exists at {s}\n", .{store_dir});
     }
+    try output.record(.{ .store = store_dir, .prefix = store.id_prefix });
 }
 
-fn cmdNew(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
+fn cmdNew(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
     var title: ?[]const u8 = null;
     var body: []const u8 = "";
     var priority: i32 = 2;
@@ -279,67 +267,43 @@ fn cmdNew(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, a
     var quiet = false;
 
     var i: usize = 0;
-    while (i < args.len) {
+    while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
+        if (cli.matchesFlag(arg, null, "json")) {
             json = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--quiet")) {
+        } else if (cli.matchesFlag(arg, null, "quiet")) {
             quiet = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--body")) {
+        } else if (cli.matchesFlag(arg, 'b', "body")) {
             body = nextValue(args, &i, "body");
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--priority")) {
+        } else if (cli.matchesFlag(arg, 'p', "priority")) {
             const val = nextValue(args, &i, "priority");
             priority = parseInt(i32, val, "priority");
             validatePriority(priority);
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--tag")) {
+        } else if (cli.matchesFlag(arg, 't', "tag")) {
             const tag = nextValue(args, &i, "tag");
             try tags.append(allocator, tag);
-            continue;
-        }
-        if (arg.len == 0) {
-            die("empty title not allowed", .{});
-        }
-        if (arg[0] != '-') {
-            if (title != null) die("multiple titles provided", .{});
+        } else if (arg.len == 0) {
+            cli.die("empty title not allowed", .{});
+        } else if (arg[0] != '-') {
+            if (title != null) cli.die("multiple titles provided", .{});
             title = arg;
-            i += 1;
-            continue;
+        } else {
+            cli.die("unknown flag: {s}", .{arg});
         }
-        die("unknown flag: {s}", .{arg});
     }
 
-    if (title == null) die("title required", .{});
+    if (title == null) cli.die("title required", .{});
+    output.setModeFromFlags(json, quiet, false, false);
+
     const processed_body = try processEscapes(allocator, body);
     defer allocator.free(processed_body);
     const id = try store.createIssue(title.?, processed_body, priority, tags.items);
     defer allocator.free(id);
 
-    if (quiet) {
-        try stdout.writeAll(id);
-        try stdout.writeByte('\n');
-        return;
-    }
-    if (json) {
-        var issue = try store.fetchIssue(id);
-        defer issue.deinit(allocator);
-        try std.json.Stringify.value(issue, .{ .whitespace = .minified }, stdout);
-        try stdout.writeByte('\n');
-        return;
-    }
-    try stdout.print("{s}\n", .{id});
+    try output.record(.{ .id = id });
 }
 
-fn cmdList(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
+fn cmdList(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
     var status: ?[]const u8 = null;
     var tag: ?[]const u8 = null;
     var search: ?[]const u8 = null;
@@ -348,101 +312,80 @@ fn cmdList(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, 
     var summary = false;
 
     var i: usize = 0;
-    while (i < args.len) {
+    while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
+        if (cli.matchesFlag(arg, null, "json")) {
             json = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--summary") or std.mem.eql(u8, arg, "-s")) {
+        } else if (cli.matchesFlag(arg, 's', "summary")) {
             summary = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--status")) {
+        } else if (cli.matchesFlag(arg, null, "status")) {
             status = nextValue(args, &i, "status");
             validateStatus(status.?);
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--tag")) {
+        } else if (cli.matchesFlag(arg, null, "tag")) {
             tag = nextValue(args, &i, "tag");
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--search")) {
+        } else if (cli.matchesFlag(arg, null, "search")) {
             search = nextValue(args, &i, "search");
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--limit")) {
+        } else if (cli.matchesFlag(arg, null, "limit")) {
             const val = nextValue(args, &i, "limit");
             limit = parseInt(i64, val, "limit");
-            continue;
+        } else {
+            cli.die("unknown flag: {s}", .{arg});
         }
-        die("unknown flag: {s}", .{arg});
     }
 
-    try listIssues(allocator, stdout, store, status, tag, search, limit, json, summary);
+    output.setModeFromFlags(json, false, summary, false);
+    try listIssues(allocator, output, store, status, tag, search, limit);
 }
 
-fn cmdSearch(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
+fn cmdSearch(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
     var query: ?[]const u8 = null;
     var limit: ?i64 = null;
     var json = false;
     var summary = false;
 
     var i: usize = 0;
-    while (i < args.len) {
+    while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
+        if (cli.matchesFlag(arg, null, "json")) {
             json = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--summary") or std.mem.eql(u8, arg, "-s")) {
+        } else if (cli.matchesFlag(arg, 's', "summary")) {
             summary = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--limit")) {
+        } else if (cli.matchesFlag(arg, null, "limit")) {
             const val = nextValue(args, &i, "limit");
             limit = parseInt(i64, val, "limit");
-            continue;
-        }
-        if (arg.len > 0 and arg[0] != '-') {
-            if (query != null) die("multiple queries provided", .{});
+        } else if (arg.len > 0 and arg[0] != '-') {
+            if (query != null) cli.die("multiple queries provided", .{});
             query = arg;
-            i += 1;
-            continue;
+        } else {
+            cli.die("unknown flag: {s}", .{arg});
         }
-        die("unknown flag: {s}", .{arg});
     }
 
-    if (query == null) die("query required", .{});
-    try listIssues(allocator, stdout, store, null, null, query, limit, json, summary);
+    if (query == null) cli.die("query required", .{});
+    output.setModeFromFlags(json, false, summary, false);
+    try listIssues(allocator, output, store, null, null, query, limit);
 }
 
-fn cmdShow(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
+fn cmdShow(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
     var json = false;
     var id_input: ?[]const u8 = null;
 
     var i: usize = 0;
-    while (i < args.len) {
+    while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
+        if (cli.matchesFlag(arg, null, "json")) {
             json = true;
-            i += 1;
-            continue;
-        }
-        if (arg.len > 0 and arg[0] != '-') {
-            if (id_input != null) die("multiple ids provided", .{});
+        } else if (arg.len > 0 and arg[0] != '-') {
+            if (id_input != null) cli.die("multiple ids provided", .{});
             id_input = arg;
-            i += 1;
-            continue;
+        } else {
+            cli.die("unknown flag: {s}", .{arg});
         }
-        die("unknown flag: {s}", .{arg});
     }
 
-    if (id_input == null) die("id required", .{});
+    if (id_input == null) cli.die("id required", .{});
+    output.setModeFromFlags(json, false, false, false);
+
     const id = try store.resolveIssueId(id_input.?);
     defer allocator.free(id);
 
@@ -459,7 +402,7 @@ fn cmdShow(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, 
         allocator.free(deps);
     }
 
-    if (json) {
+    if (output.mode == .json or output.mode == .json_pretty) {
         const record = struct {
             issue: tissue.store.Issue,
             comments: []tissue.store.Comment,
@@ -469,15 +412,17 @@ fn cmdShow(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, 
             .comments = comments,
             .deps = deps,
         };
-        try std.json.Stringify.value(record, .{ .whitespace = .minified }, stdout);
-        try stdout.writeByte('\n');
+        const json_str = std.json.Stringify.valueAlloc(output.allocator, record, .{}) catch return error.OutOfMemory;
+        defer output.allocator.free(json_str);
+        try output.write(json_str);
+        try output.write("\n");
         return;
     }
 
-    try printIssueDetails(stdout, &issue, comments, deps);
+    try printIssueDetails(output, &issue, comments, deps);
 }
 
-fn cmdEdit(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
+fn cmdEdit(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
     var id_input: ?[]const u8 = null;
     var title: ?[]const u8 = null;
     var body: ?[]const u8 = null;
@@ -491,62 +436,45 @@ fn cmdEdit(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, 
     var quiet = false;
 
     var i: usize = 0;
-    while (i < args.len) {
+    while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
+        if (cli.matchesFlag(arg, null, "json")) {
             json = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--quiet")) {
+        } else if (cli.matchesFlag(arg, null, "quiet")) {
             quiet = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--title")) {
+        } else if (cli.matchesFlag(arg, null, "title")) {
             title = nextValue(args, &i, "title");
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--body")) {
+        } else if (cli.matchesFlag(arg, null, "body")) {
             body = nextValue(args, &i, "body");
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--status")) {
+        } else if (cli.matchesFlag(arg, null, "status")) {
             status = nextValue(args, &i, "status");
             validateStatus(status.?);
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--priority")) {
+        } else if (cli.matchesFlag(arg, null, "priority")) {
             const val = nextValue(args, &i, "priority");
             priority = parseInt(i32, val, "priority");
             validatePriority(priority.?);
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--add-tag")) {
+        } else if (cli.matchesFlag(arg, null, "add-tag")) {
             const tag = nextValue(args, &i, "add-tag");
             try add_tags.append(allocator, tag);
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--rm-tag")) {
+        } else if (cli.matchesFlag(arg, null, "rm-tag")) {
             const tag = nextValue(args, &i, "rm-tag");
             try rm_tags.append(allocator, tag);
-            continue;
-        }
-        if (arg.len > 0 and arg[0] != '-') {
-            if (id_input != null) die("multiple ids provided", .{});
+        } else if (arg.len > 0 and arg[0] != '-') {
+            if (id_input != null) cli.die("multiple ids provided", .{});
             id_input = arg;
-            i += 1;
-            continue;
+        } else {
+            cli.die("unknown flag: {s}", .{arg});
         }
-        die("unknown flag: {s}", .{arg});
     }
 
-    if (id_input == null) die("id required", .{});
+    if (id_input == null) cli.die("id required", .{});
     const id = try store.resolveIssueId(id_input.?);
     defer allocator.free(id);
     if (title == null and body == null and status == null and priority == null and add_tags.items.len == 0 and rm_tags.items.len == 0) {
-        die("no changes specified", .{});
+        cli.die("no changes specified", .{});
     }
+
+    output.setModeFromFlags(json, quiet, false, false);
 
     var processed_body: ?[]u8 = null;
     defer if (processed_body) |pb| allocator.free(pb);
@@ -556,112 +484,72 @@ fn cmdEdit(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, 
     const final_body: ?[]const u8 = processed_body;
 
     try store.updateIssue(id, title, final_body, status, priority, add_tags.items, rm_tags.items);
-
-    if (quiet) {
-        try stdout.writeAll(id);
-        try stdout.writeByte('\n');
-        return;
-    }
-    if (json) {
-        var issue = try store.fetchIssue(id);
-        defer issue.deinit(allocator);
-        try std.json.Stringify.value(issue, .{ .whitespace = .minified }, stdout);
-        try stdout.writeByte('\n');
-        return;
-    }
-    try stdout.print("{s}\n", .{id});
+    try output.record(.{ .id = id });
 }
 
-fn cmdStatus(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
+fn cmdStatus(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
     var id_input: ?[]const u8 = null;
     var status: ?[]const u8 = null;
     var json = false;
     var quiet = false;
 
     var i: usize = 0;
-    while (i < args.len) {
+    while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
+        if (cli.matchesFlag(arg, null, "json")) {
             json = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--quiet")) {
+        } else if (cli.matchesFlag(arg, null, "quiet")) {
             quiet = true;
-            i += 1;
-            continue;
-        }
-        if (arg.len > 0 and arg[0] != '-') {
+        } else if (arg.len > 0 and arg[0] != '-') {
             if (id_input == null) {
                 id_input = arg;
-                i += 1;
-                continue;
-            }
-            if (status == null) {
+            } else if (status == null) {
                 status = arg;
-                i += 1;
-                continue;
+            } else {
+                cli.die("too many arguments", .{});
             }
-            die("too many arguments", .{});
+        } else {
+            cli.die("unknown flag: {s}", .{arg});
         }
-        die("unknown flag: {s}", .{arg});
     }
 
-    if (id_input == null or status == null) die("usage: tissue status <id> <open|in_progress|paused|duplicate|closed>", .{});
+    if (id_input == null or status == null) cli.die("usage: tissue status <id> <open|in_progress|paused|duplicate|closed>", .{});
     validateStatus(status.?);
+    output.setModeFromFlags(json, quiet, false, false);
+
     const id = try store.resolveIssueId(id_input.?);
     defer allocator.free(id);
     try store.updateIssue(id, null, null, status, null, &.{}, &.{});
-
-    if (quiet) {
-        try stdout.writeAll(id);
-        try stdout.writeByte('\n');
-        return;
-    }
-    if (json) {
-        var issue = try store.fetchIssue(id);
-        defer issue.deinit(allocator);
-        try std.json.Stringify.value(issue, .{ .whitespace = .minified }, stdout);
-        try stdout.writeByte('\n');
-        return;
-    }
-    try stdout.print("{s}\n", .{id});
+    try output.record(.{ .id = id, .status = status.? });
 }
 
-fn cmdComment(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
+fn cmdComment(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
     var id_input: ?[]const u8 = null;
     var body: ?[]const u8 = null;
     var json = false;
     var quiet = false;
 
     var i: usize = 0;
-    while (i < args.len) {
+    while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
+        if (cli.matchesFlag(arg, null, "json")) {
             json = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--quiet")) {
+        } else if (cli.matchesFlag(arg, null, "quiet")) {
             quiet = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--message")) {
+        } else if (cli.matchesFlag(arg, 'm', "message")) {
             body = nextValue(args, &i, "message");
-            continue;
-        }
-        if (arg.len > 0 and arg[0] != '-') {
-            if (id_input != null) die("unexpected argument: {s}\nDid you forget -m? Usage: tissue comment <id> -m <text>", .{arg});
+        } else if (arg.len > 0 and arg[0] != '-') {
+            if (id_input != null) cli.die("unexpected argument: {s}\nDid you forget -m? Usage: tissue comment <id> -m <text>", .{arg});
             id_input = arg;
-            i += 1;
-            continue;
+        } else {
+            cli.die("unknown flag: {s}", .{arg});
         }
-        die("unknown flag: {s}", .{arg});
     }
 
-    if (id_input == null) die("id required. Usage: tissue comment <id> -m <text>", .{});
-    if (body == null) die("message required. Usage: tissue comment <id> -m <text>", .{});
+    if (id_input == null) cli.die("id required. Usage: tissue comment <id> -m <text>", .{});
+    if (body == null) cli.die("message required. Usage: tissue comment <id> -m <text>", .{});
+    output.setModeFromFlags(json, quiet, false, false);
+
     const id = try store.resolveIssueId(id_input.?);
     defer allocator.free(id);
     const processed_body = try processEscapes(allocator, body.?);
@@ -669,30 +557,11 @@ fn cmdComment(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Stor
     const comment_id = try store.addComment(id, processed_body);
     defer allocator.free(comment_id);
 
-    if (quiet) {
-        try stdout.writeAll(comment_id);
-        try stdout.writeByte('\n');
-        return;
-    }
-    if (json) {
-        const record = struct {
-            id: []const u8,
-            issue_id: []const u8,
-            body: []const u8,
-        }{
-            .id = comment_id,
-            .issue_id = id,
-            .body = body.?,
-        };
-        try std.json.Stringify.value(record, .{ .whitespace = .minified }, stdout);
-        try stdout.writeByte('\n');
-        return;
-    }
-    try stdout.print("{s}\n", .{comment_id});
+    try output.record(.{ .id = comment_id, .issue_id = id });
 }
 
-fn cmdTag(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
-    if (args.len < 3) die("usage: tissue tag <add|rm> <id> <tag>", .{});
+fn cmdTag(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
+    if (args.len < 3) cli.die("usage: tissue tag <add|rm> <id> <tag>", .{});
     const action = args[0];
     const id_input = args[1];
     const tag = args[2];
@@ -702,15 +571,17 @@ fn cmdTag(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, a
     if (args.len > 3) {
         var i: usize = 3;
         while (i < args.len) : (i += 1) {
-            if (std.mem.eql(u8, args[i], "--json")) {
+            if (cli.matchesFlag(args[i], null, "json")) {
                 json = true;
-            } else if (std.mem.eql(u8, args[i], "--quiet")) {
+            } else if (cli.matchesFlag(args[i], null, "quiet")) {
                 quiet = true;
             } else {
-                die("unknown flag: {s}", .{args[i]});
+                cli.die("unknown flag: {s}", .{args[i]});
             }
         }
     }
+
+    output.setModeFromFlags(json, quiet, false, false);
 
     const id = try store.resolveIssueId(id_input);
     defer allocator.free(id);
@@ -720,26 +591,14 @@ fn cmdTag(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, a
     } else if (std.mem.eql(u8, action, "rm")) {
         try store.updateIssue(id, null, null, null, null, &.{}, &.{tag});
     } else {
-        die("unknown tag action: {s}", .{action});
+        cli.die("unknown tag action: {s}", .{action});
     }
 
-    if (quiet) {
-        try stdout.writeAll(id);
-        try stdout.writeByte('\n');
-        return;
-    }
-    if (json) {
-        var issue = try store.fetchIssue(id);
-        defer issue.deinit(allocator);
-        try std.json.Stringify.value(issue, .{ .whitespace = .minified }, stdout);
-        try stdout.writeByte('\n');
-        return;
-    }
-    try stdout.print("{s}\n", .{id});
+    try output.record(.{ .id = id, .action = action, .tag = tag });
 }
 
-fn cmdDep(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
-    if (args.len < 4) die("usage: tissue dep <add|rm> <id> <kind> <target>", .{});
+fn cmdDep(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
+    if (args.len < 4) cli.die("usage: tissue dep <add|rm> <id> <kind> <target>", .{});
     const action = args[0];
     const id_input = args[1];
     const kind = args[2];
@@ -750,15 +609,17 @@ fn cmdDep(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, a
     if (args.len > 4) {
         var i: usize = 4;
         while (i < args.len) : (i += 1) {
-            if (std.mem.eql(u8, args[i], "--json")) {
+            if (cli.matchesFlag(args[i], null, "json")) {
                 json = true;
-            } else if (std.mem.eql(u8, args[i], "--quiet")) {
+            } else if (cli.matchesFlag(args[i], null, "quiet")) {
                 quiet = true;
             } else {
-                die("unknown flag: {s}", .{args[i]});
+                cli.die("unknown flag: {s}", .{args[i]});
             }
         }
     }
+
+    output.setModeFromFlags(json, quiet, false, false);
 
     const id = try store.resolveIssueId(id_input);
     defer allocator.free(id);
@@ -770,53 +631,29 @@ fn cmdDep(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, a
     } else if (std.mem.eql(u8, action, "rm")) {
         try store.removeDep(id, kind, target);
     } else {
-        die("unknown dep action: {s}", .{action});
+        cli.die("unknown dep action: {s}", .{action});
     }
 
-    if (quiet) {
-        try stdout.writeAll(id);
-        try stdout.writeByte('\n');
-        return;
-    }
-    if (json) {
-        const record = struct {
-            action: []const u8,
-            src_id: []const u8,
-            dst_id: []const u8,
-            kind: []const u8,
-        }{
-            .action = action,
-            .src_id = id,
-            .dst_id = target,
-            .kind = kind,
-        };
-        try std.json.Stringify.value(record, .{ .whitespace = .minified }, stdout);
-        try stdout.writeByte('\n');
-        return;
-    }
-    try stdout.print("{s}\n", .{id});
+    try output.record(.{ .action = action, .src_id = id, .dst_id = target, .kind = kind });
 }
 
-fn cmdDeps(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
+fn cmdDeps(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
     var json = false;
     var id_input: ?[]const u8 = null;
     var i: usize = 0;
-    while (i < args.len) {
+    while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
+        if (cli.matchesFlag(arg, null, "json")) {
             json = true;
-            i += 1;
-            continue;
-        }
-        if (arg.len > 0 and arg[0] != '-') {
-            if (id_input != null) die("multiple ids provided", .{});
+        } else if (arg.len > 0 and arg[0] != '-') {
+            if (id_input != null) cli.die("multiple ids provided", .{});
             id_input = arg;
-            i += 1;
-            continue;
+        } else {
+            cli.die("unknown flag: {s}", .{arg});
         }
-        die("unknown flag: {s}", .{arg});
     }
-    if (id_input == null) die("id required", .{});
+    if (id_input == null) cli.die("id required", .{});
+    output.setModeFromFlags(json, false, false, false);
 
     const id = try store.resolveIssueId(id_input.?);
     defer allocator.free(id);
@@ -826,63 +663,59 @@ fn cmdDeps(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, 
         allocator.free(deps);
     }
 
-    if (json) {
-        try std.json.Stringify.value(deps, .{ .whitespace = .minified }, stdout);
-        try stdout.writeByte('\n');
+    if (output.mode == .json or output.mode == .json_pretty) {
+        const json_str = std.json.Stringify.valueAlloc(output.allocator, deps, .{}) catch return error.OutOfMemory;
+        defer output.allocator.free(json_str);
+        try output.write(json_str);
+        try output.write("\n");
         return;
     }
 
     for (deps) |dep| {
-        try stdout.print("{s} {s} -> {s}\n", .{ dep.kind, shortId(dep.src_id), shortId(dep.dst_id) });
+        try output.print("{s} {s} -> {s}\n", .{ dep.kind, shortId(dep.src_id), shortId(dep.dst_id) });
     }
 }
 
-fn cmdReady(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
+fn cmdReady(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
     var json = false;
     var limit: ?i64 = null;
     var i: usize = 0;
-    while (i < args.len) {
+    while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
+        if (cli.matchesFlag(arg, null, "json")) {
             json = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--limit")) {
+        } else if (cli.matchesFlag(arg, null, "limit")) {
             const val = nextValue(args, &i, "limit");
             limit = parseInt(i64, val, "limit");
-            continue;
+        } else {
+            cli.die("unknown flag: {s}", .{arg});
         }
-        die("unknown flag: {s}", .{arg});
     }
-    try listReady(allocator, stdout, store, limit, json);
+    output.setModeFromFlags(json, false, false, false);
+    try listReady(allocator, output, store, limit);
 }
 
-fn cmdClean(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
+fn cmdClean(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
     var force = false;
     var older_than_days: ?u32 = null;
     var json = false;
 
     var i: usize = 0;
-    while (i < args.len) {
+    while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--force")) {
+        if (cli.matchesFlag(arg, null, "force")) {
             force = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--json")) {
+        } else if (cli.matchesFlag(arg, null, "json")) {
             json = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--older-than")) {
+        } else if (cli.matchesFlag(arg, null, "older-than")) {
             const val = nextValue(args, &i, "older-than");
             older_than_days = parseDays(val);
-            continue;
+        } else {
+            cli.die("unknown flag: {s}", .{arg});
         }
-        die("unknown flag: {s}", .{arg});
     }
+
+    output.setModeFromFlags(json, false, false, false);
 
     // Find closed issues to clean
     const closed_issues = try findClosedIssues(allocator, store, older_than_days);
@@ -892,41 +725,41 @@ fn cmdClean(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store,
     }
 
     if (closed_issues.len == 0) {
-        if (json) {
-            try stdout.writeAll("{\"removed\":0,\"issues\":[]}\n");
+        if (output.mode == .json or output.mode == .json_pretty) {
+            try output.write("{\"removed\":0,\"issues\":[]}\n");
         } else {
-            try stdout.writeAll("No closed issues to clean.\n");
+            try output.write("No closed issues to clean.\n");
         }
         return;
     }
 
-    if (json) {
-        try stdout.writeAll("{\"dry_run\":");
-        try stdout.writeAll(if (force) "false" else "true");
-        try stdout.writeAll(",\"count\":");
-        try stdout.print("{d}", .{closed_issues.len});
-        try stdout.writeAll(",\"issues\":[");
+    if (output.mode == .json or output.mode == .json_pretty) {
+        try output.write("{\"dry_run\":");
+        try output.write(if (force) "false" else "true");
+        try output.write(",\"count\":");
+        try output.print("{d}", .{closed_issues.len});
+        try output.write(",\"issues\":[");
         for (closed_issues, 0..) |id, idx| {
-            if (idx > 0) try stdout.writeByte(',');
-            try stdout.print("\"{s}\"", .{id});
+            if (idx > 0) try output.write(",");
+            try output.print("\"{s}\"", .{id});
         }
-        try stdout.writeAll("]}\n");
+        try output.write("]}\n");
     } else {
         if (force) {
-            try stdout.print("Removing {d} closed issue(s):\n", .{closed_issues.len});
+            try output.print("Removing {d} closed issue(s):\n", .{closed_issues.len});
         } else {
-            try stdout.print("Would remove {d} closed issue(s) (use --force to execute):\n", .{closed_issues.len});
+            try output.print("Would remove {d} closed issue(s) (use --force to execute):\n", .{closed_issues.len});
         }
         for (closed_issues) |id| {
             // Fetch issue details for display
             var issue = store.fetchIssue(id) catch {
-                try stdout.print("  {s}\n", .{id});
+                try output.print("  {s}\n", .{id});
                 continue;
             };
             defer issue.deinit(allocator);
             var title_buf: [30]u8 = undefined;
             const title_display = truncateTitle(issue.title, &title_buf);
-            try stdout.print("  {s} {s}\n", .{ shortId(id), title_display });
+            try output.print("  {s} {s}\n", .{ shortId(id), title_display });
         }
     }
 
@@ -936,8 +769,8 @@ fn cmdClean(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store,
     try rewriteJsonlWithoutIssues(allocator, store, closed_issues);
     try store.forceReimport();
 
-    if (!json) {
-        try stdout.print("Cleaned {d} issue(s).\n", .{closed_issues.len});
+    if (output.mode == .human or output.mode == .summary) {
+        try output.print("Cleaned {d} issue(s).\n", .{closed_issues.len});
     }
 }
 
@@ -1078,34 +911,28 @@ fn rewriteJsonlWithoutIssues(allocator: std.mem.Allocator, store: *Store, ids_to
     try std.fs.renameAbsolute(tmp_path, store.jsonl_path);
 }
 
-fn cmdMigrate(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, args: []const []const u8) !void {
+fn cmdMigrate(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, args: []const []const u8) !void {
     var source_path: ?[]const u8 = null;
     var json = false;
     var dry_run = false;
 
     var i: usize = 0;
-    while (i < args.len) {
+    while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
+        if (cli.matchesFlag(arg, null, "json")) {
             json = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--dry-run")) {
+        } else if (cli.matchesFlag(arg, null, "dry-run")) {
             dry_run = true;
-            i += 1;
-            continue;
-        }
-        if (arg.len > 0 and arg[0] != '-') {
-            if (source_path != null) die("multiple source paths provided", .{});
+        } else if (arg.len > 0 and arg[0] != '-') {
+            if (source_path != null) cli.die("multiple source paths provided", .{});
             source_path = arg;
-            i += 1;
-            continue;
+        } else {
+            cli.die("unknown flag: {s}", .{arg});
         }
-        die("unknown flag: {s}", .{arg});
     }
 
-    if (source_path == null) die("usage: tissue migrate <source-store> [--dry-run] [--json]", .{});
+    if (source_path == null) cli.die("usage: tissue migrate <source-store> [--dry-run] [--json]", .{});
+    output.setModeFromFlags(json, false, false, false);
 
     // Resolve source path
     const resolved_source = try resolvePath(allocator, source_path.?);
@@ -1116,7 +943,7 @@ fn cmdMigrate(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Stor
     defer allocator.free(source_jsonl);
 
     if (!fileExists(source_jsonl)) {
-        die("source store not found: {s}", .{resolved_source});
+        cli.die("source store not found: {s}", .{resolved_source});
     }
 
     // Read source jsonl
@@ -1269,25 +1096,18 @@ fn cmdMigrate(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Stor
     const comments_migrated = comment_lines.items.len;
     const deps_migrated = dep_lines.items.len;
 
-    if (json) {
-        const record = struct {
-            dry_run: bool,
-            issues: usize,
-            comments: usize,
-            deps: usize,
-        }{
+    if (output.mode == .json or output.mode == .json_pretty) {
+        try output.record(.{
             .dry_run = dry_run,
             .issues = total_migrated,
             .comments = comments_migrated,
             .deps = deps_migrated,
-        };
-        try std.json.Stringify.value(record, .{ .whitespace = .minified }, stdout);
-        try stdout.writeByte('\n');
+        });
     } else {
         if (dry_run) {
-            try stdout.print("Would migrate {d} issue(s), {d} comment(s), {d} dep(s) from {s}\n", .{ total_migrated, comments_migrated, deps_migrated, resolved_source });
+            try output.print("Would migrate {d} issue(s), {d} comment(s), {d} dep(s) from {s}\n", .{ total_migrated, comments_migrated, deps_migrated, resolved_source });
         } else {
-            try stdout.print("Migrating {d} issue(s), {d} comment(s), {d} dep(s) from {s}\n", .{ total_migrated, comments_migrated, deps_migrated, resolved_source });
+            try output.print("Migrating {d} issue(s), {d} comment(s), {d} dep(s) from {s}\n", .{ total_migrated, comments_migrated, deps_migrated, resolved_source });
         }
     }
 
@@ -1319,8 +1139,8 @@ fn cmdMigrate(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Stor
     // Force reimport to rebuild SQLite
     try store.forceReimport();
 
-    if (!json) {
-        try stdout.print("Migration complete.\n", .{});
+    if (output.mode == .human or output.mode == .summary) {
+        try output.info("Migration complete.", .{});
     }
 }
 
@@ -1331,20 +1151,18 @@ fn parseDays(val: []const u8) u32 {
         num_end = val.len - 1;
     }
     return std.fmt.parseInt(u32, val[0..num_end], 10) catch {
-        die("invalid days value: {s}", .{val});
+        cli.die("invalid days value: {s}", .{val});
     };
 }
 
 fn listIssues(
     allocator: std.mem.Allocator,
-    stdout: *std.Io.Writer,
+    output: *cli.Output,
     store: *Store,
     status: ?[]const u8,
     tag: ?[]const u8,
     search: ?[]const u8,
     limit: ?i64,
-    json: bool,
-    summary: bool,
 ) !void {
     var sql: std.ArrayList(u8) = .empty;
     defer sql.deinit(allocator);
@@ -1409,8 +1227,8 @@ fn listIssues(
         bind_index += 1;
     }
 
-    if (json) {
-        try stdout.writeByte('[');
+    if (output.mode == .json or output.mode == .json_pretty) {
+        try output.write("[");
         var first = true;
         while (try tissue.sqlite.step(stmt)) {
             const record = struct {
@@ -1430,19 +1248,20 @@ fn listIssues(
                 .tags = tissue.sqlite.columnText(stmt, 5),
                 .body = tissue.sqlite.columnText(stmt, 6),
             };
-            if (!first) try stdout.writeByte(',');
+            if (!first) try output.write(",");
             first = false;
-            try std.json.Stringify.value(record, .{ .whitespace = .minified }, stdout);
+            const json_str = std.json.Stringify.valueAlloc(output.allocator, record, .{}) catch return error.OutOfMemory;
+            defer output.allocator.free(json_str);
+            try output.write(json_str);
         }
-        try stdout.writeByte(']');
-        try stdout.writeByte('\n');
+        try output.write("]\n");
         return;
     }
 
-    if (summary) {
-        try stdout.print("{s:10} {s:11} {s:3} {s:30} {s}\n", .{ "ID", "Status", "Pri", "Title", "Tags" });
+    if (output.mode == .summary) {
+        try output.print("{s:10} {s:11} {s:3} {s:30} {s}\n", .{ "ID", "Status", "Pri", "Title", "Tags" });
     } else {
-        try stdout.print("{s:10} {s:11} {s:3} {s:30} {s:43} {s}\n", .{ "ID", "Status", "Pri", "Title", "Description", "Tags" });
+        try output.print("{s:10} {s:11} {s:3} {s:30} {s:43} {s}\n", .{ "ID", "Status", "Pri", "Title", "Description", "Tags" });
     }
     while (try tissue.sqlite.step(stmt)) {
         const id = tissue.sqlite.columnText(stmt, 0);
@@ -1454,17 +1273,17 @@ fn listIssues(
         const tags_display = if (tags_val.len == 0) "-" else tags_val;
         var title_buf: [30]u8 = undefined;
         const title_display = truncateTitle(title_val, &title_buf);
-        if (summary) {
-            try stdout.print("{s:10} {s:11} {d:>3} {s:30} {s}\n", .{ shortId(id), status_val, priority_val, title_display, tags_display });
+        if (output.mode == .summary) {
+            try output.print("{s:10} {s:11} {d:>3} {s:30} {s}\n", .{ shortId(id), status_val, priority_val, title_display, tags_display });
         } else {
             var desc_buf: [48]u8 = undefined;
             const desc = truncateDesc(body_val, &desc_buf);
-            try stdout.print("{s:10} {s:11} {d:>3} {s:30} {s:43} {s}\n", .{ shortId(id), status_val, priority_val, title_display, desc, tags_display });
+            try output.print("{s:10} {s:11} {d:>3} {s:30} {s:43} {s}\n", .{ shortId(id), status_val, priority_val, title_display, desc, tags_display });
         }
     }
 }
 
-fn listReady(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store, limit: ?i64, json: bool) !void {
+fn listReady(allocator: std.mem.Allocator, output: *cli.Output, store: *Store, limit: ?i64) !void {
     var sql: std.ArrayList(u8) = .empty;
     defer sql.deinit(allocator);
 
@@ -1504,8 +1323,8 @@ fn listReady(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store
         try tissue.sqlite.bindInt64(stmt, 1, limit.?);
     }
 
-    if (json) {
-        try stdout.writeByte('[');
+    if (output.mode == .json or output.mode == .json_pretty) {
+        try output.write("[");
         var first = true;
         while (try tissue.sqlite.step(stmt)) {
             const record = struct {
@@ -1525,16 +1344,17 @@ fn listReady(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store
                 .tags = tissue.sqlite.columnText(stmt, 5),
                 .body = tissue.sqlite.columnText(stmt, 6),
             };
-            if (!first) try stdout.writeByte(',');
+            if (!first) try output.write(",");
             first = false;
-            try std.json.Stringify.value(record, .{ .whitespace = .minified }, stdout);
+            const json_str = std.json.Stringify.valueAlloc(output.allocator, record, .{}) catch return error.OutOfMemory;
+            defer output.allocator.free(json_str);
+            try output.write(json_str);
         }
-        try stdout.writeByte(']');
-        try stdout.writeByte('\n');
+        try output.write("]\n");
         return;
     }
 
-    try stdout.print("{s:10} {s:1} {s:7} {s:30} {s:43} {s}\n", .{ "ID", "P", "Status", "Title", "Description", "Tags" });
+    try output.print("{s:10} {s:1} {s:7} {s:30} {s:43} {s}\n", .{ "ID", "P", "Status", "Title", "Description", "Tags" });
     while (try tissue.sqlite.step(stmt)) {
         const id = tissue.sqlite.columnText(stmt, 0);
         const status_val = tissue.sqlite.columnText(stmt, 1);
@@ -1547,47 +1367,47 @@ fn listReady(allocator: std.mem.Allocator, stdout: *std.Io.Writer, store: *Store
         const desc = truncateDesc(body_val, &desc_buf);
         var title_buf: [30]u8 = undefined;
         const title_display = truncateTitle(title_val, &title_buf);
-        try stdout.print("{s:10} {d} {s:7} {s:30} {s:43} {s}\n", .{ shortId(id), priority_val, status_val, title_display, desc, tags_display });
+        try output.print("{s:10} {d} {s:7} {s:30} {s:43} {s}\n", .{ shortId(id), priority_val, status_val, title_display, desc, tags_display });
     }
 }
 
-fn printIssueDetails(writer: *std.Io.Writer, issue: *const tissue.store.Issue, comments: []tissue.store.Comment, deps: []tissue.store.Dep) !void {
-    try writer.print("ID: {s}\n", .{issue.id});
-    try writer.print("Title: {s}\n", .{issue.title});
-    try writer.print("Status: {s}\n", .{issue.status});
-    try writer.print("Priority: {d}\n", .{issue.priority});
-    try writer.print("Tags:", .{});
+fn printIssueDetails(output: *cli.Output, issue: *const tissue.store.Issue, comments: []tissue.store.Comment, deps: []tissue.store.Dep) !void {
+    try output.print("ID: {s}\n", .{issue.id});
+    try output.print("Title: {s}\n", .{issue.title});
+    try output.print("Status: {s}\n", .{issue.status});
+    try output.print("Priority: {d}\n", .{issue.priority});
+    try output.print("Tags:", .{});
     if (issue.tags.len == 0) {
-        try writer.print(" (none)\n", .{});
+        try output.print(" (none)\n", .{});
     } else {
         for (issue.tags, 0..) |tag, idx| {
             if (idx == 0) {
-                try writer.print(" {s}", .{tag});
+                try output.print(" {s}", .{tag});
             } else {
-                try writer.print(", {s}", .{tag});
+                try output.print(", {s}", .{tag});
             }
         }
-        try writer.print("\n", .{});
+        try output.print("\n", .{});
     }
     var created_buf: [32]u8 = undefined;
     var updated_buf: [32]u8 = undefined;
     const created_str = formatTimestamp(issue.created_at, &created_buf);
     const updated_str = formatTimestamp(issue.updated_at, &updated_buf);
-    try writer.print("Created: {s}\n", .{created_str});
-    try writer.print("Updated: {s}\n", .{updated_str});
+    try output.print("Created: {s}\n", .{created_str});
+    try output.print("Updated: {s}\n", .{updated_str});
     if (issue.body.len > 0) {
-        try writer.print("\n{s}\n", .{issue.body});
+        try output.print("\n{s}\n", .{issue.body});
     }
     if (deps.len > 0) {
-        try writer.print("\nDeps:\n", .{});
+        try output.print("\nDeps:\n", .{});
         for (deps) |dep| {
-            try writer.print("- {s} {s} -> {s}\n", .{ dep.kind, shortId(dep.src_id), shortId(dep.dst_id) });
+            try output.print("- {s} {s} -> {s}\n", .{ dep.kind, shortId(dep.src_id), shortId(dep.dst_id) });
         }
     }
     if (comments.len > 0) {
-        try writer.print("\nComments:\n", .{});
+        try output.print("\nComments:\n", .{});
         for (comments) |comment| {
-            try writer.print("- {s}\n", .{comment.body});
+            try output.print("- {s}\n", .{comment.body});
         }
     }
 }
@@ -1654,14 +1474,14 @@ const Bind = union(enum) {
 
 fn nextValue(args: []const []const u8, index: *usize, name: []const u8) []const u8 {
     const i = index.*;
-    if (i + 1 >= args.len) die("missing value for {s}", .{name});
+    if (i + 1 >= args.len) cli.die("missing value for {s}", .{name});
     index.* = i + 2;
     return args[i + 1];
 }
 
 fn parseInt(comptime T: type, value: []const u8, name: []const u8) T {
     return std.fmt.parseInt(T, value, 10) catch {
-        die("invalid {s}: {s}", .{ name, value });
+        cli.die("invalid {s}: {s}", .{ name, value });
     };
 }
 
@@ -1671,12 +1491,12 @@ fn validateStatus(status: []const u8) void {
         std.mem.eql(u8, status, "paused") or
         std.mem.eql(u8, status, "duplicate") or
         std.mem.eql(u8, status, "closed")) return;
-    die("invalid status: {s} (use open, in_progress, paused, duplicate, closed)", .{status});
+    cli.die("invalid status: {s} (use open, in_progress, paused, duplicate, closed)", .{status});
 }
 
 fn validatePriority(priority: i32) void {
     if (priority >= 1 and priority <= 5) return;
-    die("invalid priority: {d} (must be 1-5)", .{priority});
+    cli.die("invalid priority: {d} (must be 1-5)", .{priority});
 }
 
 fn processEscapes(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
@@ -1797,11 +1617,6 @@ fn dirExists(path: []const u8) bool {
 fn fileExists(path: []const u8) bool {
     std.fs.accessAbsolute(path, .{}) catch return false;
     return true;
-}
-
-fn die(comptime fmt: []const u8, args: anytype) noreturn {
-    std.debug.print(fmt ++ "\n", args);
-    std.process.exit(1);
 }
 
 fn dieOnError(err: anyerror) noreturn {
